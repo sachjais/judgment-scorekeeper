@@ -91,5 +91,10 @@ def record_tricks():
 def show_scores():
     return jsonify({"scores": game_state.get("scores", {})})
 
+@app.route('/')
+def home():
+    return jsonify({"message": "Judgment Score Keeper API is running!"})
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
