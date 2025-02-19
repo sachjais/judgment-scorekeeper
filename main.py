@@ -1,68 +1,44 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+import random
 
 app = Flask(__name__)
-CORS(app)
 
-# Store game state globally
 game_state = {}
 
-class JudgmentGame:
-    def __init__(self, player_names):
-        self.num_players = len(player_names)
-        self.players = {name.strip(): {"bid": 0, "tricks_won": 0, "score": 0} for name in player_names}
-        self.round = 1
-        self.trump_suit = "Spades"
-        self.dealer_index = 0
-        self.max_rounds = 52 // self.num_players  # Maximum rounds before deck is exhausted
-        self.cards_per_round = 1  # First round starts with 1 card
+def select_trump():
+    """Randomly selects a trump suit."""
+    suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
+    return random.choice(suits)
 
-    def set_bids(self, bids):
-        for i, bid in enumerate(bids):
-            player_name = list(self.players.keys())[i]
-            self.players[player_name]["bid"] = bid
-
-    def record_tricks_won(self, tricks):
-        for i, tricks_won in enumerate(tricks):
-            player_name = list(self.players.keys())[i]
-            self.players[player_name]["tricks_won"] = tricks_won
-            if tricks_won == self.players[player_name]["bid"]:
-                self.players[player_name]["score"] += 10 + tricks_won  # Correct bid
-            else:
-                self.players[player_name]["score"] += 0  # Incorrect bid
-
-    def next_round(self):
-        if self.round < self.max_rounds:
-            self.round += 1
-            self.cards_per_round += 1  # Increase cards dealt per round
-            self.trump_suit = ["Spades", "Hearts", "Clubs", "Diamonds"][self.round % 4]  # Rotate trump
-            self.dealer_index = (self.dealer_index + 1) % self.num_players  # Rotate dealer
-            return {
-                "round": self.round,
-                "trump_suit": self.trump_suit,
-                "dealer": list(self.players.keys())[self.dealer_index],
-                "cards_per_round": self.cards_per_round
-            }
-        return "Game over."
-
-    def get_scores(self):
-        return {player: self.players[player]["score"] for player in self.players}
-
-@app.route('/')
-def home():
-    return jsonify({"message": "Judgment Score Keeper API is running!"})
+def determine_rounds(num_players):
+    """Determines the number of rounds based on the number of players."""
+    if num_players == 3:
+        return 5
+    elif num_players in [4, 5]:
+        return 4
+    elif num_players == 6:
+        return 3
+    else:
+        return None
 
 @app.route('/start_game', methods=['POST'])
 def start_game():
     data = request.json
-    player_names = [name.strip() for name in data.get("players").split(",")]
-    global game_state
-    game_state["game"] = JudgmentGame(player_names)
-    first_dealer = player_names[0]
+    players = [p.strip() for p in data.get("players").split(",")]
+    num_rounds = determine_rounds(len(players))
+    
+    if not num_rounds:
+        return jsonify({"error": "Invalid number of players! Must be between 3-6."})
+
+    game_state["players"] = players
+    game_state["scores"] = {player: 0 for player in players}
+    game_state["round"] = 1
+    game_state["max_rounds"] = num_rounds
+
     return jsonify({
-        "response": f"Game started with {len(player_names)} players. Round 1 begins.",
-        "trump_suit": "Spades",
-        "first_dealer": first_dealer,
+        "message": f"Game started with {len(players)} players!",
+        "round": 1,
+        "trump_suit": select_trump(),
         "cards_per_round": 1
     })
 
@@ -70,20 +46,50 @@ def start_game():
 def set_bids():
     data = request.json
     bids = list(map(int, data.get("bids").split(",")))
-    game_state["game"].set_bids(bids)
-    return jsonify({"response": "Bids recorded. Start playing!"})
+
+    if len(bids) != len(game_state["players"]):
+        return jsonify({"error": "Number of bids must match number of players."})
+
+    game_state["bids"] = dict(zip(game_state["players"], bids))
+
+    return jsonify({"message": "Bids recorded!", "bids": game_state["bids"]})
 
 @app.route('/record_tricks', methods=['POST'])
 def record_tricks():
     data = request.json
-    tricks = list(map(int, data.get("tricks").split(",")))
-    game_state["game"].record_tricks_won(tricks)
-    next_round_info = game_state["game"].next_round()
-    return jsonify({"response": "Scores updated.", "scores": game_state["game"].get_scores(), "next_round": next_round_info})
+    tricks_won = list(map(int, data.get("tricks").split(",")))
+
+    if len(tricks_won) != len(game_state["players"]):
+        return jsonify({"error": "Number of tricks must match number of players."})
+
+    players = game_state["players"]
+    scores = game_state["scores"]
+    bids = game_state.get("bids", {})
+
+    for i, player in enumerate(players):
+        if bids[player] == tricks_won[i]:  # Successful bid
+            scores[player] += 10 + tricks_won[i]
+        else:
+            scores[player] -= abs(bids[player] - tricks_won[i])
+
+    game_state["scores"] = scores
+
+    # Advance round
+    game_state["round"] += 1
+    if game_state["round"] > game_state["max_rounds"]:
+        return jsonify({"message": "Game over!", "final_scores": game_state["scores"]})
+
+    return jsonify({
+        "message": "Scores updated!",
+        "scores": game_state["scores"],
+        "next_round": game_state["round"],
+        "trump_suit": select_trump(),
+        "cards_per_round": game_state["round"]
+    })
 
 @app.route('/show_scores', methods=['GET'])
 def show_scores():
-    return jsonify({"response": game_state["game"].get_scores()})
+    return jsonify({"scores": game_state.get("scores", {})})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
